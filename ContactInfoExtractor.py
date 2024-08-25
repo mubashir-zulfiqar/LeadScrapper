@@ -91,7 +91,7 @@ def extract_emails_from_text(text):
     Returns:
         set: A set of extracted email addresses.
     """
-    email_pattern = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+    email_pattern = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?!\.png)')
     emails = set(email_pattern.findall(text))
 
     # Extract emails from mailto links
@@ -99,7 +99,8 @@ def extract_emails_from_text(text):
     for mailto in soup.find_all('a', href=True):
         if 'mailto:' in mailto['href']:
             email = mailto['href'].split('mailto:')[1]
-            emails.add(email)
+            if not email.endswith('.png'):
+                emails.add(email)
 
     logger.info(f"Extracted emails: {emails.__str__()}")
     return emails
@@ -299,6 +300,7 @@ def crawl_site(base_url, session):
 
     logger.info(f"Crawl completed with {len(all_emails)} unique emails and {len(all_phones)} unique phones found")
     return list(all_emails), list(all_phones)
+
 
 def main(input_file, output_file, max_sites=None):
     """
