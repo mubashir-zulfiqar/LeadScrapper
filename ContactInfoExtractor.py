@@ -1,34 +1,66 @@
 import logging
+import random
 import re
+import json
 import time
 from collections import deque
 from urllib.parse import urljoin, urlparse
+import os
+from dotenv import load_dotenv  # Import load_dotenv
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import random
 
-API_KEY = 'mdvuejhmd7tgx9m7i1ob'
-TIMEOUT = 20  # Increase timeout value
-RETRIES = 3  # Number of retries
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def get_proxies():
-    """
-    Fetches a list of proxies from ProxyScrape.
+# Load credentials from environment variables
+API_KEY = os.getenv('PROXYSCRAPE_API_KEY')
+UPTIMEROBOT_API_KEY = os.getenv('UPTIMEROBOT_API_KEY')
+SITERELIC_API_KEY = os.getenv('SITERELIC_API_KEY')
 
-    Returns:
-        list: A list of proxy addresses.
-    """
+# Function to get a list of proxies from ProxyScrape
+def get_proxies():
     response = requests.get(f'https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all&ssl=all&anonymity=all&apikey={API_KEY}')
     proxies = response.text.split('\n')
     return [proxy.strip() for proxy in proxies if proxy.strip()]
+
+def fetch_with_proxy(session, url):
+    """
+    Fetches the content of the given URL using a proxy.
+
+    Args:
+        session (requests.Session): The session to use for making requests.
+        url (str): The URL to fetch content from.
+
+    Returns:
+        requests.Response: The response object containing the content of the URL.
+    """
+    proxies_list = get_proxies()
+    if not proxies_list:
+        logger.error("No proxies available")
+        raise Exception("No proxies available")
+
+    proxy_address = random.choice(proxies_list)  # Select a random proxy from the list
+    proxies = {
+        'http': f'http://{proxy_address}',
+        'https': f'https://{proxy_address}'
+    }
+
+    try:
+        response = session.get(url, proxies=proxies, timeout=10)
+        response.raise_for_status()
+        return response
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching {url} with proxy: {proxy_address}")
+        raise
 
 def create_session():
     """
@@ -46,43 +78,6 @@ def create_session():
     session.mount('http://', adapter)
     session.mount('https://', adapter)
     return session
-
-def fetch_with_proxy(session, url):
-    """
-    Fetches the URL using the session, retries with proxies if blocked.
-
-    Args:
-        session (requests.Session): The session to use for making requests.
-        url (str): The URL to fetch.
-
-    Returns:
-        requests.Response: The response object.
-    """
-    try:
-        response = session.get(url, timeout=TIMEOUT)
-        response.raise_for_status()
-        return response
-    except requests.RequestException as e:
-        logger.warning(f"Initial request failed: {e}")
-        proxies = get_proxies()
-        for attempt in range(RETRIES):
-            if not proxies:
-                break
-            proxy = random.choice(proxies)
-            proxy_url = f'http://{proxy}'
-            session.proxies = {
-                'http': proxy_url,
-                'https': proxy_url,
-            }
-            logger.info(f"Attempt {attempt + 1}: Using proxy {proxy}")
-            try:
-                response = session.get(url, timeout=TIMEOUT)
-                response.raise_for_status()
-                return response
-            except requests.RequestException as e:
-                logger.warning(f"Request with proxy {proxy} failed: {e}")
-                time.sleep(2)  # Wait before retrying
-        raise requests.RequestException("All attempts failed")
 
 def extract_emails_from_text(text):
     """
@@ -104,7 +99,7 @@ def extract_emails_from_text(text):
             email = mailto['href'].split('mailto:')[1]
             emails.add(email)
 
-    logger.info(f"Extracted emails: {emails}")
+    logger.info(f"Extracted emails: {emails.__str__()}")
     return emails
 
 def extract_phone_numbers_from_text(text):
@@ -150,7 +145,8 @@ def extract_contact_info(url, session):
         tuple: A tuple containing lists of emails, phone numbers, and an error message (if any).
     """
     try:
-        response = fetch_with_proxy(session, url)
+        response = session.get(url, timeout=10)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
         # Extract emails
@@ -201,6 +197,50 @@ def get_sitemap_urls(url, session):
 
     return sitemap_urls
 
+def is_site_down(url):
+    """
+    Checks if the site is down using the SiteRelic API.
+
+    Args:
+        url (str): The URL to check.
+
+    Returns:
+        bool: True if the site is down, False otherwise.
+    """
+    api_url = "https://api.siterelic.com/up"
+    headers = {
+        'x-api-key': SITERELIC_API_KEY,
+        'Content-Type': 'application/json'
+    }
+    payload = json.dumps({
+        "url": url,
+        "followRedirect": True,
+        "proxyCountry": "us"
+    })
+    try:
+        response = requests.post(api_url, headers=headers, data=payload)
+        # response.raise_for_status()
+        result = response.json()
+        logger.debug(f"SiteRelic API response: {result}")  # Log the full API response for debugging
+
+        if result.get('apiCode') == 200 and result.get('apiStatus') == 'success':
+            return False
+        else:
+            return True
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 403:
+            logger.error(f"Access forbidden when checking site status: {e}")
+        elif e.response.status_code == 404:
+            logger.error(f"Site not found: {e}")
+        elif e.response.status_code == 500:
+            logger.error(f"Internal server error: {e}")
+        else:
+            logger.error(f"HTTP error occurred: {e}")
+        return False
+    except requests.RequestException as e:
+        logger.error(f"Error checking site status: {e}")
+        return False
+
 def crawl_site(base_url, session):
     """
     Crawls the given base URL and its internal links to extract emails and phone numbers.
@@ -212,6 +252,7 @@ def crawl_site(base_url, session):
     Returns:
         tuple: A tuple containing lists of all unique emails and phone numbers found.
     """
+
     visited_urls = set()
     urls_to_visit = deque([base_url])
     all_emails = set()
@@ -239,14 +280,7 @@ def crawl_site(base_url, session):
 
             for link in soup.find_all('a', href=True):
                 link_url = urljoin(base_url, link['href'])
-                parsed_url = urlparse(link_url)
-
-                # Filter out fragment-only URLs and ensure the URL is within the same domain
-                if parsed_url.fragment:
-                    continue
-
-                if parsed_url.netloc == urlparse(
-                        base_url).netloc and link_url not in visited_urls and link_url not in urls_to_visit:
+                if urlparse(link_url).hostname == urlparse(base_url).hostname and link_url not in visited_urls:
                     urls_to_visit.append(link_url)
 
         except requests.RequestException as e:
@@ -277,16 +311,27 @@ def main(input_file, output_file, max_sites=None):
         url = url.strip()  # Remove any leading/trailing whitespace
         if not url.startswith(('http://', 'https://')):
             data.append({
-                'S/N': i + 1,
-                'URL': url,
-                'Emails': '',
-                'Phones': '',
-                'Error': 'Invalid URL (missing scheme)'
+                'url': url,
+                'emails': [],
+                'phones': [],
+                'error': 'Invalid URL'
             })
             continue
 
         logger.info(f"Processing site {i + 1}/{total_sites}: {url}...")
         site_start_time = time.time()
+
+        # Check if the site is down
+        if is_site_down(url):
+            logger.error(f"Site {url} is down for everyone.")
+            data.append({
+                'url': url,
+                'emails': [],
+                'phones': [],
+                'error': 'Site is down'
+            })
+            continue
+
         session = create_session()  # Create a session with retries and headers
 
         # First, try to get URLs from sitemap if available
@@ -294,35 +339,34 @@ def main(input_file, output_file, max_sites=None):
         if urls_from_sitemap:
             logger.info(f"URLs obtained from sitemap: {len(urls_from_sitemap)}")
             for site_url in urls_from_sitemap:
-                if site_url.startswith(('http://', 'https://')):
-                    emails, phones = crawl_site(site_url, session)
+                # Check if the site is down before crawling
+                if is_site_down(site_url):
+                    logger.error(f"Site {site_url} is down. Skipping.")
                     data.append({
-                        'S/N': i + 1,
-                        'URL': site_url,
-                        'Emails': ', '.join(emails),
-                        'Phones': ', '.join(phones),
-                        'Error': None
+                        'url': site_url,
+                        'emails': [],
+                        'phones': [],
+                        'error': 'Site is down'
                     })
-                else:
-                    data.append({
-                        'S/N': i + 1,
-                        'URL': site_url,
-                        'Emails': '',
-                        'Phones': '',
-                        'Error': 'Invalid URL (missing scheme)'
-                    })
+                    continue
+                emails, phones = crawl_site(site_url, session)
+                data.append({
+                    'url': site_url,
+                    'emails': emails,
+                    'phones': phones,
+                    'error': None
+                })
         else:
             emails, phones = crawl_site(url, session)
             error = None
             if not emails and not phones:
-                error = "No contact info found or error occurred during crawling"
+                error = 'No contact info found'
 
             data.append({
-                'S/N': i + 1,
-                'URL': url,
-                'Emails': ', '.join(emails),
-                'Phones': ', '.join(phones),
-                'Error': error
+                'url': url,
+                'emails': emails,
+                'phones': phones,
+                'error': error
             })
 
         site_end_time = time.time()
@@ -342,7 +386,7 @@ def main(input_file, output_file, max_sites=None):
     logger.info(f"Results saved to {output_file}")
 
 if __name__ == "__main__":
-    input_file = 'collected_urls-dev.xlsx'  # Replace with your input file path
+    input_file = 'collected_urls.xlsx'  # Replace with your input file path
     output_file = 'contact_details.xlsx'  # Replace with your desired output file path
     max_sites = 5  # Limit to processing 5 sites; set to None for no limit
     main(input_file, output_file, max_sites)
