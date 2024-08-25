@@ -17,7 +17,7 @@ def is_valid_url(url):
 
 
 # Path to the Excel file
-file_path = 'websites_list.xlsx'
+file_path = '../resources/sheets/websites_list.xlsx'
 
 try:
     # Read the Excel file

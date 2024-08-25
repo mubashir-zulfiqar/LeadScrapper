@@ -7,6 +7,7 @@ from collections import deque
 from urllib.parse import urljoin, urlparse
 import os
 from dotenv import load_dotenv  # Import load_dotenv
+from datetime import datetime  # Import datetime
 
 import pandas as pd
 import requests
@@ -17,8 +18,12 @@ from urllib3.util.retry import Retry
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Generate log file name with current date and time
+current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_file_name = f'../logs/logs_{current_time}.log'
+
+# Configure logging to write to a .log file
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', filename=f'../logs/{log_file_name}', filemode='w')
 logger = logging.getLogger(__name__)
 
 # Load credentials from environment variables
@@ -61,7 +66,7 @@ def fetch_with_proxy(session, url):
         response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching {url} with proxy: {proxy_address}")
+        logger.error(f"Error fetching {url} with proxy: {proxy_address}, Error: {e}")
         raise
 
 def create_session():
@@ -81,17 +86,18 @@ def create_session():
     session.mount('https://', adapter)
     return session
 
-def extract_emails_from_text(text):
+def extract_emails_from_text(text, domain):
     """
     Extracts email addresses from the given text using regex and BeautifulSoup.
 
     Args:
-        text (str): The text content to search for email addresses.
+        :param text: (str) The text content to search for email addresses.
+        :param domain:
 
     Returns:
         set: A set of extracted email addresses.
     """
-    email_pattern = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?!\.png)')
+    email_pattern = re.compile(r'[a-zA-Z0-9._%+-]+@(?:' + re.escape(domain) + r'|gmail\.com|hotmail\.com|yahoo\.com|outlook\.com|aol\.com|icloud\.com|protonmail\.com|zoho\.com|mail\.com|gmx\.com)\b(?!\.png)')
     emails = set(email_pattern.findall(text))
 
     # Extract emails from mailto links
@@ -99,7 +105,7 @@ def extract_emails_from_text(text):
     for mailto in soup.find_all('a', href=True):
         if 'mailto:' in mailto['href']:
             email = mailto['href'].split('mailto:')[1]
-            if not email.endswith('.png'):
+            if not email.endswith('.png') and (domain in email or any(provider in email for provider in ['gmail.com', 'hotmail.com', 'yahoo.com', 'outlook.com', 'aol.com', 'icloud.com', 'protonmail.com', 'zoho.com', 'mail.com', 'gmx.com'])):
                 emails.add(email)
 
     logger.info(f"Extracted emails: {emails.__str__()}")
@@ -152,12 +158,15 @@ def extract_contact_info(url, session):
         response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
 
+        domain = urlparse(url).hostname
+
         # Extract emails
-        emails = extract_emails_from_text(response.text)
+        emails = extract_emails_from_text(response.text, domain)
         for mailto in soup.find_all('a', href=True):
             if 'mailto:' in mailto['href']:
                 email = mailto['href'].split('mailto:')[1]
-                emails.add(email)
+                if not email.endswith('.png') and (domain in email or any(provider in email for provider in ['gmail.com', 'hotmail.com', 'yahoo.com', 'outlook.com', 'aol.com', 'icloud.com', 'protonmail.com', 'zoho.com', 'mail.com', 'gmx.com'])):
+                    emails.add(email)
 
         # Extract phone numbers
         phones = extract_phone_numbers_from_text(response.text)
@@ -399,7 +408,7 @@ def main(input_file, output_file, max_sites=None):
     logger.info(f"Results saved to {output_file}")
 
 if __name__ == "__main__":
-    input_file = 'collected_urls-dev.xlsx'  # Replace with your input file path
-    output_file = 'contact_details.xlsx'  # Replace with your desired output file path
+    input_file = '../resources/sheets/collected_urls-dev.xlsx'  # Replace with your input file path
+    output_file = '../resources/sheets/contact_details.xlsx'  # Replace with your desired output file path
     max_sites = 5  # Limit to processing 5 sites; set to None for no limit
     main(input_file, output_file, max_sites)
