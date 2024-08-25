@@ -3,14 +3,15 @@ import random
 import re
 import json
 import time
-from collections import deque
-from urllib.parse import urljoin, urlparse
 import os
-from dotenv import load_dotenv  # Import load_dotenv
-from datetime import datetime  # Import datetime
-
+import sys
 import pandas as pd
 import requests
+
+from collections import deque
+from urllib.parse import urljoin, urlparse
+from dotenv import load_dotenv  # Import load_dotenv
+from datetime import datetime  # Import datetime
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -209,16 +210,9 @@ def get_sitemap_urls(url, session):
 
     return sitemap_urls
 
+import sys
+
 def is_site_down(url):
-    """
-    Checks if the site is down using the SiteRelic API.
-
-    Args:
-        url (str): The URL to check.
-
-    Returns:
-        bool: True if the site is down, False otherwise.
-    """
     api_url = "https://api.siterelic.com/up"
     headers = {
         'x-api-key': SITERELIC_API_KEY,
@@ -231,27 +225,39 @@ def is_site_down(url):
     })
     try:
         response = requests.post(api_url, headers=headers, data=payload)
-        # response.raise_for_status()
         result = response.json()
-        logger.debug(f"SiteRelic API response: {result}")  # Log the full API response for debugging
+        logger.debug(f"SiteRelic API response: {result}")
 
         if result.get('apiCode') == 200 and result.get('apiStatus') == 'success':
             return False
         else:
             return True
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 403:
-            logger.error(f"Access forbidden when checking site status: {e}")
-        elif e.response.status_code == 404:
-            logger.error(f"Site not found: {e}")
-        elif e.response.status_code == 500:
-            logger.error(f"Internal server error: {e}")
-        else:
-            logger.error(f"HTTP error occurred: {e}")
-        return False
-    except requests.RequestException as e:
+    except requests.exceptions.RequestException as e:
+        error_message = str(e)
+        if "Errno 11002" in error_message:
+            logger.error(f"Critical error: {error_message}")
+            sys.exit("Halting script due to critical error in checking site status.")
         logger.error(f"Error checking site status: {e}")
         return False
+
+def is_site_available(url, session):
+    """
+    Checks if the site is available. If not, checks if the site is down globally.
+
+    Args:
+        url (str): The URL to check.
+        session (requests.Session): The session to use for making requests.
+
+    Returns:
+        bool: True if the site is not available, False if it is available.
+    """
+    try:
+        response = session.get(url, timeout=10)
+        response.raise_for_status()
+        return False  # Site is available
+    except requests.RequestException:
+        # If the request fails, check if the site is down globally
+        return is_site_down(url)
 
 def crawl_site(base_url, session):
     """
@@ -310,7 +316,6 @@ def crawl_site(base_url, session):
     logger.info(f"Crawl completed with {len(all_emails)} unique emails and {len(all_phones)} unique phones found")
     return list(all_emails), list(all_phones)
 
-
 def main(input_file, output_file, max_sites=None):
     """
     Main function to read URLs from an input file, extract contact information, and save results to an output file.
@@ -343,34 +348,24 @@ def main(input_file, output_file, max_sites=None):
         logger.info(f"Processing site {i + 1}/{total_sites}: {url}...")
         site_start_time = time.time()
 
+        session = create_session()  # Create a session with retries and headers
+
         # Check if the site is down
-        if is_site_down(url):
+        if is_site_available(url, session):
             logger.error(f"Site {url} is down for everyone.")
             data.append({
                 'url': url,
                 'emails': [],
                 'phones': [],
-                'error': 'Site is down'
+                'error': 'Site is down globally'
             })
             continue
-
-        session = create_session()  # Create a session with retries and headers
 
         # First, try to get URLs from sitemap if available
         urls_from_sitemap = get_sitemap_urls(url, session)
         if urls_from_sitemap:
             logger.info(f"URLs obtained from sitemap: {len(urls_from_sitemap)}")
             for site_url in urls_from_sitemap:
-                # Check if the site is down before crawling
-                if is_site_down(site_url):
-                    logger.error(f"Site {site_url} is down. Skipping.")
-                    data.append({
-                        'url': site_url,
-                        'emails': [],
-                        'phones': [],
-                        'error': 'Site is down'
-                    })
-                    continue
                 emails, phones = crawl_site(site_url, session)
                 data.append({
                     'url': site_url,
