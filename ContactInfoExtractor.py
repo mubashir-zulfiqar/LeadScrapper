@@ -43,6 +43,8 @@ def fetch_with_proxy(session, url):
     Returns:
         requests.Response: The response object containing the content of the URL.
     """
+    logger.info(f"Fetching {url} with proxy...")
+
     proxies_list = get_proxies()
     if not proxies_list:
         logger.error("No proxies available")
@@ -274,7 +276,16 @@ def crawl_site(base_url, session):
 
         # Fetch links from the current page
         try:
-            response = fetch_with_proxy(session, current_url)
+            # Attempt to fetch without proxy first
+            try:
+                response = session.get(current_url, timeout=10)
+                response.raise_for_status()
+                logger.info(f"Fetched {current_url} without proxy")
+            except requests.RequestException as e:
+                logger.warning(f"Failed to fetch {current_url} without proxy: {e}")
+                response = fetch_with_proxy(session, current_url)
+                logger.info(f"Fetched {current_url} with proxy")
+
             soup = BeautifulSoup(response.text, 'html.parser')
             base_url = urlparse(current_url).scheme + "://" + urlparse(current_url).hostname
 
@@ -386,7 +397,7 @@ def main(input_file, output_file, max_sites=None):
     logger.info(f"Results saved to {output_file}")
 
 if __name__ == "__main__":
-    input_file = 'collected_urls.xlsx'  # Replace with your input file path
+    input_file = 'collected_urls-dev.xlsx'  # Replace with your input file path
     output_file = 'contact_details.xlsx'  # Replace with your desired output file path
     max_sites = 5  # Limit to processing 5 sites; set to None for no limit
     main(input_file, output_file, max_sites)
