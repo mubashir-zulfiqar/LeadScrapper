@@ -1,0 +1,7 @@
+requests~=2.32.3
+python-dotenv~=1.0.1
+beautifulsoup4~=4.12.3
+pandas~=2.2.2
+urllib3~=2.2.2
+lxml==4.6.3
+openpyxl==3.0.7
